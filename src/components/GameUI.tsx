@@ -32,6 +32,7 @@ import {
   subscribeSolarAudio,
 } from "../utils/solarAudio";
 import { shareRoomLink } from "../utils/shareRoom";
+import { ShareRoomModal } from "./ShareRoomModal";
 
 const t = (key: string, lang: Language = "en") => {
   return translations[lang]?.[key] || translations["en"]?.[key] || key;
@@ -126,16 +127,11 @@ export function GameUI({
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [audioState, setAudioState] = useState(() => getSolarAudioState());
   const [shareFeedback, setShareFeedback] = useState<string | null>(null);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
 
-  const handleShareRoom = async () => {
+  const handleShareRoom = () => {
     if (mode === "training") return;
-    const id = roomId || "global";
-    const title = roomInfo?.roomName || "Arena de Batalha";
-    const res = await shareRoomLink(id, title, isPt);
-    if (res.success) {
-      setShareFeedback(isPt ? "Link copiado!" : "Link copied!");
-      setTimeout(() => setShareFeedback(null), 3000);
-    }
+    setShareModalOpen(true);
   };
 
   useEffect(() => {
@@ -788,6 +784,15 @@ export function GameUI({
           </div>
         </div>
       )}
+
+      {/* Share Room Modal for in-game multiplayer invitations */}
+      <ShareRoomModal
+        isOpen={shareModalOpen}
+        onClose={() => setShareModalOpen(false)}
+        roomId={roomId || "global"}
+        roomName={roomInfo?.roomName || (isPt ? "Arena de Batalha" : "Battle Arena")}
+        lang={lang}
+      />
     </>
   );
 }

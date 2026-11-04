@@ -21,7 +21,8 @@ import {
   Hash,
   ArrowRight
 } from "lucide-react";
-import { shareRoomLink } from "../utils/shareRoom";
+import { shareRoomLink, copyToClipboard } from "../utils/shareRoom";
+import { ShareRoomModal } from "./ShareRoomModal";
 
 interface RoomItem {
   id: string;
@@ -65,15 +66,12 @@ export const RoomsListModal: React.FC<RoomsListModalProps> = ({
   const [enteredPassword, setEnteredPassword] = useState("");
   const [showEnteredPassword, setShowEnteredPassword] = useState(false);
   const [passwordPromptError, setPasswordPromptError] = useState<string | null>(null);
+  const [shareTargetRoom, setShareTargetRoom] = useState<RoomItem | null>(null);
   const [copiedRoomId, setCopiedRoomId] = useState<string | null>(null);
 
-  const handleShareRoom = async (e: React.MouseEvent, room: RoomItem) => {
+  const handleShareRoom = (e: React.MouseEvent, room: RoomItem) => {
     e.stopPropagation();
-    const res = await shareRoomLink(room.id, room.name, isPt);
-    if (res.success) {
-      setCopiedRoomId(room.id);
-      setTimeout(() => setCopiedRoomId(null), 2500);
-    }
+    setShareTargetRoom(room);
   };
 
   const fetchRooms = async () => {
@@ -487,6 +485,17 @@ export const RoomsListModal: React.FC<RoomsListModalProps> = ({
           </div>
         )}
       </div>
+
+      {/* Dedicated Share Room Invite Modal */}
+      {shareTargetRoom && (
+        <ShareRoomModal
+          isOpen={!!shareTargetRoom}
+          onClose={() => setShareTargetRoom(null)}
+          roomId={shareTargetRoom.id}
+          roomName={shareTargetRoom.name}
+          lang={lang}
+        />
+      )}
     </div>
   );
 };

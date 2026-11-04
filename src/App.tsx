@@ -26,7 +26,8 @@ import {
   Sparkles,
   Share2,
   Wifi,
-  Edit3
+  Edit3,
+  X
 } from "lucide-react";
 import { PrivacyPolicy } from "./components/legal/PrivacyPolicy";
 import { CookieConsent } from "./components/legal/CookieConsent";
@@ -35,6 +36,7 @@ import { AboutGame } from "./components/AboutGame";
 import { LoginModal } from "./components/LoginModal";
 import { CreateRoomModal } from "./components/CreateRoomModal";
 import { RoomsListModal } from "./components/RoomsListModal";
+import { ShareRoomModal } from "./components/ShareRoomModal";
 
 export default function App() {
   const [parts, setParts] = useState<Part[]>([]);
@@ -99,17 +101,21 @@ export default function App() {
   const [roomsListModalOpen, setRoomsListModalOpen] = useState(false);
   const [selectedRoomId, setSelectedRoomId] = useState<string>("global");
   const [selectedRoomData, setSelectedRoomData] = useState<any>(null);
+  const [shareModalState, setShareModalState] = useState<{ open: boolean; roomId: string; roomName?: string } | null>(null);
+  const [pendingInviteRoom, setPendingInviteRoom] = useState<string | null>(null);
   const viewerRef = useRef<SpaceshipViewerRef>(null);
 
   const handleRoomCreated = (room: any) => {
     setSelectedRoomId(room.id);
     setSelectedRoomData(room);
+    setShareModalState({ open: true, roomId: room.id, roomName: room.name });
     setMode("multiplayer");
   };
 
   const handleSelectRoom = (roomId: string, roomData?: any) => {
     setSelectedRoomId(roomId);
     setSelectedRoomData(roomData || null);
+    setPendingInviteRoom(null);
     setMode("multiplayer");
   };
 
@@ -118,9 +124,10 @@ export default function App() {
     const urlParams = new URLSearchParams(window.location.search);
     const targetRoom = urlParams.get('room') || urlParams.get('p2p');
     if (targetRoom) {
-      setSelectedRoomId(targetRoom);
-      setSelectedRoomData({ id: targetRoom, name: `Sala P2P [${targetRoom}]` });
-      setRoomsListModalOpen(true);
+      const cleanId = targetRoom.trim().toUpperCase();
+      setSelectedRoomId(cleanId);
+      setSelectedRoomData({ id: cleanId, name: `Sala P2P [${cleanId}]` });
+      setPendingInviteRoom(cleanId);
     }
   }, []);
 
@@ -457,6 +464,45 @@ export default function App() {
 
       {/* Main 3D Viewer Area */}
       <main className="flex-1 relative">
+        {/* Battle Invite Banner received via URL */}
+        {pendingInviteRoom && (
+          <div className="absolute top-6 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-lg p-3.5 sm:p-4 bg-[#0a121d]/95 backdrop-blur-xl border border-emerald-500/50 rounded-2xl shadow-[0_0_35px_rgba(16,185,129,0.3)] flex items-center justify-between gap-3 text-white animate-fadeIn">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="p-2.5 bg-emerald-500/20 text-emerald-400 rounded-xl border border-emerald-500/40 shrink-0">
+                <Swords className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">
+                  {lang === "pt" ? "Convite de Sala Detectado!" : "Room Invite Detected!"}
+                </p>
+                <p className="text-sm font-bold text-white truncate">
+                  {lang === "pt" ? "Entrar na Sala:" : "Join Room:"}{" "}
+                  <span className="font-mono text-amber-300 font-bold px-1.5 py-0.5 bg-amber-500/10 rounded border border-amber-500/30">
+                    #{pendingInviteRoom}
+                  </span>
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => {
+                  handleSelectRoom(pendingInviteRoom, { name: `Sala [${pendingInviteRoom}]` });
+                  setPendingInviteRoom(null);
+                }}
+                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md shadow-emerald-950/40 cursor-pointer"
+              >
+                {lang === "pt" ? "Entrar Agora" : "Join Now"}
+              </button>
+              <button
+                onClick={() => setPendingInviteRoom(null)}
+                className="p-1.5 text-gray-400 hover:text-white rounded-lg hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         <SpaceshipViewer ref={viewerRef} parts={parts} onPartClick={handlePartClick} selectedPartId={selectedPartId} />
 
         {user && user.ships && user.ships.length > 1 && (
@@ -768,6 +814,15 @@ export default function App() {
           user={user}
           lang={lang}
         />
+        {shareModalState && (
+          <ShareRoomModal
+            isOpen={shareModalState.open}
+            onClose={() => setShareModalState(null)}
+            roomId={shareModalState.roomId}
+            roomName={shareModalState.roomName}
+            lang={lang}
+          />
+        )}
       </main>
     </div>
   );
