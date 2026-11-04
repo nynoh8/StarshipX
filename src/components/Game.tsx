@@ -14,6 +14,7 @@ import { RemotePlayer, Explosion } from "./RemotePlayer";
 import { BulletsManager } from "./BulletsManager";
 import { SolarSystem } from "./SolarSystem";
 import { Radar, RadarLogic } from "./Radar";
+import { SpaceTargetTracker } from "./SpaceTargetTracker";
 import { GameUI } from "./GameUI";
 import { isWebGLSupported, WebGLErrorBoundary, WebGLResilienceHandler } from "../hooks/useWebGLResilience";
 import { Language } from "../utils/translations";
@@ -528,6 +529,11 @@ export function Game({
 
               <SolarSystem roomMedia={roomMedia} />
               <RadarLogic
+                players={players}
+                remoteData={remoteData}
+                localData={localData}
+              />
+              <SpaceTargetTracker
                 players={players}
                 remoteData={remoteData}
                 localData={localData}

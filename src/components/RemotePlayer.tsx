@@ -79,12 +79,24 @@ export function RemotePlayer({
     <group ref={ref} renderOrder={10}>
       <group visible={!isDead}>
         <SpaceshipModel parts={parts} />
+        
+        {/* Long-range glowing plasma beacon visible across the galaxy */}
+        <mesh position={[0, 0, 0]}>
+          <sphereGeometry args={[3.5, 16, 16]} />
+          <meshBasicMaterial
+            color="#38bdf8"
+            transparent
+            opacity={0.4}
+            blending={THREE.AdditiveBlending}
+          />
+        </mesh>
+
         {/* Top light for visibility */}
         <pointLight
           position={[0, 8, 0]}
-          intensity={3}
-          color="#f8fafc"
-          distance={40}
+          intensity={4}
+          color="#38bdf8"
+          distance={60}
         />
         {/* Name tag balloon */}
         <Html position={[0, 8, 0]} center distanceFactor={20} pointerEvents="none">
