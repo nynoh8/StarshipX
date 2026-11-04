@@ -7,7 +7,7 @@ import {
 } from "@react-three/drei";
 import { generateSpaceship, Part } from "../utils/spaceshipGenerator";
 import { getShipStats } from "../utils/shipStats";
-import { io, Socket } from "socket.io-client";
+import { createGameSocket, NetworkSocket } from "../utils/p2pNetwork";
 import { MobileControls } from "./MobileControls";
 import { Player } from "./Player";
 import { RemotePlayer, Explosion } from "./RemotePlayer";
@@ -94,7 +94,7 @@ export function Game({
   roomId?: string;
   roomData?: any;
 }) {
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [socket, setSocket] = useState<NetworkSocket | any | null>(null);
   const [isRevealed, setIsRevealed] = useState(false);
   const [players, setPlayers] = useState<any[]>([]);
   const [health, setHealth] = useState(100);
@@ -143,13 +143,13 @@ export function Game({
   }, [initialSeed, customParts]);
 
   useEffect(() => {
-    const newSocket = io();
+    const newSocket = createGameSocket(roomId || "global");
     setSocket(newSocket);
 
     newSocket.on("connect", () => {
       // Initialize P2P WebRTC mesh with peers in the room
       p2pMesh.init(
-        newSocket,
+        newSocket as any,
         newSocket.id,
         (peerId: string, packet: P2PPacket) => {
           if (packet.type === "move" && packet.payload) {

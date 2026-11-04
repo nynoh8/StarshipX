@@ -62,7 +62,7 @@ export function Player({
   playerName,
 }: {
   parts: Part[];
-  socket: Socket;
+  socket: any;
   localData: React.MutableRefObject<any>;
   remoteData: React.MutableRefObject<any>;
   health: number;

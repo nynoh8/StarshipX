@@ -12,7 +12,7 @@ const missileGeometry = new THREE.CapsuleGeometry(1.2, 5, 4, 8);
 missileGeometry.rotateX(Math.PI / 2);
 const missileMaterial = new THREE.MeshBasicMaterial({ color: 0xff5500 });
 
-export function BulletsManager({ socket }: { socket: Socket }) {
+export function BulletsManager({ socket }: { socket: any }) {
   const groupRef = useRef<THREE.Group>(null);
   const bullets = useRef<
     Map<
