@@ -7,6 +7,15 @@
     <meta name="description" content="An online tool to automatically generate 3D spaceships, play in multiplayer arenas, and manage your fleet with strict GDPR/LGPD compliance." />
     <meta property="og:title" content="StarshipX Battle" />
     <meta property="og:description" content="An online tool to automatically generate 3D spaceships, play in multiplayer arenas, and manage your fleet with strict GDPR/LGPD compliance." />
+    <script>
+      // If deployed on GitHub Pages with root folder selected, automatically redirect to compiled /docs/
+      (function() {
+        if (typeof window !== 'undefined' && window.location.hostname.includes('github.io') && !window.location.pathname.includes('/docs')) {
+          var cleanPath = window.location.pathname.replace(/\/+$/, '');
+          window.location.replace(cleanPath + '/docs/' + window.location.search + window.location.hash);
+        }
+      })();
+    </script>
     <script type="module" crossorigin src="./assets/index.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index.css">
   </head>

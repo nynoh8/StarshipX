@@ -1,5 +1,5 @@
 import mqtt, { MqttClient } from "mqtt";
-import { io, Socket } from "socket.io-client";
+import { io } from "socket.io-client";
 import { v4 as uuidv4 } from "uuid";
 import { getShipStats } from "./shipStats";
 import { generateSolarSpawnPoint } from "./solarSpawn";
@@ -24,14 +24,14 @@ export class ServerlessMqttSocket implements NetworkSocket {
   public connected: boolean = false;
   private client: MqttClient | null = null;
   private listeners: Map<string, Array<(...args: any[]) => void>> = new Map();
-  private roomId: string = "global";
+  private roomId: string = "GLOBAL";
   private localPlayer: any = null;
   private peers: Map<string, any> = new Map();
   private heartbeatInterval: any = null;
   private isDestroyed = false;
 
-  constructor(roomId: string = "global", preferredId?: string) {
-    this.roomId = (roomId || "global").trim().toUpperCase();
+  constructor(roomId: string = "GLOBAL", preferredId?: string) {
+    this.roomId = (roomId || "GLOBAL").trim().toUpperCase();
     this.id = preferredId || `pilot-${uuidv4().substring(0, 8)}`;
     this.connectBroker(0);
   }
@@ -40,13 +40,13 @@ export class ServerlessMqttSocket implements NetworkSocket {
     if (this.isDestroyed || brokerIndex >= BROKERS.length) return;
 
     const brokerUrl = BROKERS[brokerIndex];
-    const topicPrefix = `starshipx/v2/rooms/${encodeURIComponent(this.roomId)}`;
+    const topicPrefix = `starshipx/v3/rooms/${encodeURIComponent(this.roomId)}`;
 
     try {
       this.client = mqtt.connect(brokerUrl, {
         clientId: `${this.id}-${Math.random().toString(36).substring(2, 6)}`,
         clean: true,
-        connectTimeout: 5000,
+        connectTimeout: 6000,
         reconnectPeriod: 3000,
         will: {
           topic: `${topicPrefix}/leave`,
@@ -58,31 +58,42 @@ export class ServerlessMqttSocket implements NetworkSocket {
 
       this.client.on("connect", () => {
         this.connected = true;
+        console.log(`⚡ [P2P Network] Connected to room [${this.roomId}] as [${this.id}] via ${brokerUrl}`);
         this.dispatch("connect");
 
         // Subscribe to all room events
-        this.client?.subscribe(`${topicPrefix}/#`, (err) => {
+        this.client?.subscribe(`${topicPrefix}/#`, { qos: 0 }, (err) => {
           if (!err) {
-            console.log(`[P2P Network] Connected to room [${this.roomId}] via ${brokerUrl}`);
             if (this.localPlayer) {
               this.publish("join", { player: this.localPlayer });
             }
           }
         });
 
-        // Periodic presence heartbeat
+        // Periodic presence heartbeat every 2.5s
         clearInterval(this.heartbeatInterval);
         this.heartbeatInterval = setInterval(() => {
           if (this.connected && this.localPlayer) {
             this.publish("presence", { player: this.localPlayer });
           }
-        }, 3000);
+        }, 2500);
       });
 
-      this.client.on("message", (topic: string, messageBuffer: Buffer) => {
+      this.client.on("message", (topic: string, messagePayload: any) => {
         try {
           const action = topic.split("/").pop();
-          const data = JSON.parse(messageBuffer.toString());
+          let jsonString = "";
+
+          // Cross-platform binary decode for browser Uint8Array and Node Buffer
+          if (typeof messagePayload === "string") {
+            jsonString = messagePayload;
+          } else if (typeof TextDecoder !== "undefined") {
+            jsonString = new TextDecoder("utf-8").decode(messagePayload);
+          } else {
+            jsonString = messagePayload.toString();
+          }
+
+          const data = JSON.parse(jsonString);
 
           // Ignore own messages
           if (data.senderId === this.id || data.id === this.id) {
@@ -91,7 +102,7 @@ export class ServerlessMqttSocket implements NetworkSocket {
 
           this.handleRemoteMessage(action, data);
         } catch (e) {
-          // Ignore malformed packets
+          // Ignored malformed packets
         }
       });
 
@@ -117,7 +128,7 @@ export class ServerlessMqttSocket implements NetworkSocket {
 
   private publish(subTopic: string, payload: any) {
     if (!this.client || !this.connected) return;
-    const topic = `starshipx/v2/rooms/${encodeURIComponent(this.roomId)}/${subTopic}`;
+    const topic = `starshipx/v3/rooms/${encodeURIComponent(this.roomId)}/${subTopic}`;
     const packet = {
       ...payload,
       senderId: this.id,
@@ -133,12 +144,23 @@ export class ServerlessMqttSocket implements NetworkSocket {
   private handleRemoteMessage(action: string | undefined, data: any) {
     switch (action) {
       case "join": {
-        const player = data.player;
-        if (!player || !player.id) return;
+        const rawPlayer = data.player;
+        if (!rawPlayer || !rawPlayer.id) return;
+        const player = {
+          ...rawPlayer,
+          activeSeed: rawPlayer.activeSeed || rawPlayer.seed || "seed",
+          position: rawPlayer.position || [0, 0, -2800],
+          quaternion: rawPlayer.quaternion || [0, 0, 0, 1],
+          name: rawPlayer.name || "Piloto Amigo",
+          health: rawPlayer.health ?? 100,
+          isDead: false,
+          isNPC: false,
+        };
+
         this.peers.set(player.id, player);
         this.dispatch("player:join", player);
 
-        // Reply with our presence so the newly joined player sees us immediately
+        // Immediate reply with our presence so the newcomer sees us right away
         if (this.localPlayer) {
           this.publish("presence", { player: this.localPlayer });
         }
@@ -146,17 +168,42 @@ export class ServerlessMqttSocket implements NetworkSocket {
       }
 
       case "presence": {
-        const player = data.player;
-        if (!player || !player.id) return;
-        if (!this.peers.has(player.id)) {
-          this.peers.set(player.id, player);
-          this.dispatch("player:join", player);
-        }
+        const rawPlayer = data.player;
+        if (!rawPlayer || !rawPlayer.id) return;
+        const player = {
+          ...rawPlayer,
+          activeSeed: rawPlayer.activeSeed || rawPlayer.seed || "seed",
+          position: rawPlayer.position || [0, 0, -2800],
+          quaternion: rawPlayer.quaternion || [0, 0, 0, 1],
+          name: rawPlayer.name || "Piloto Amigo",
+          health: rawPlayer.health ?? 100,
+          isDead: false,
+          isNPC: false,
+        };
+
+        this.peers.set(player.id, player);
+        this.dispatch("player:join", player);
         break;
       }
 
       case "move": {
         if (data.id && data.position && data.quaternion) {
+          // If we missed their join packet, add them automatically
+          if (!this.peers.has(data.id)) {
+            const peer = {
+              id: data.id,
+              name: data.name || "Piloto Amigo",
+              activeSeed: data.activeSeed || "seed",
+              position: data.position,
+              quaternion: data.quaternion,
+              health: 100,
+              isDead: false,
+              isNPC: false,
+            };
+            this.peers.set(data.id, peer);
+            this.dispatch("player:join", peer);
+          }
+
           this.dispatch("player:move", {
             id: data.id,
             position: data.position,
@@ -179,7 +226,7 @@ export class ServerlessMqttSocket implements NetworkSocket {
 
       case "damage": {
         if (data.targetId === this.id) {
-          // We were hit by another player's laser/missile!
+          // We were hit by an opponent's shot
           if (this.localPlayer && !this.localPlayer.isDead) {
             const newHealth = Math.max(0, (this.localPlayer.health ?? 100) - (data.amount || 20));
             this.localPlayer.health = newHealth;
@@ -204,9 +251,7 @@ export class ServerlessMqttSocket implements NetworkSocket {
                     position: spawn.position,
                     quaternion: spawn.quaternion,
                   });
-                  this.publish("respawn", {
-                    player: this.localPlayer,
-                  });
+                  this.publish("respawn", { player: this.localPlayer });
                 }
               }, 3000);
             }
@@ -318,6 +363,8 @@ export class ServerlessMqttSocket implements NetworkSocket {
           this.localPlayer.quaternion = data.quaternion;
           this.publish("move", {
             id: this.id,
+            name: this.localPlayer.name,
+            activeSeed: this.localPlayer.activeSeed,
             position: data.position,
             quaternion: data.quaternion,
           });
@@ -363,7 +410,7 @@ export class ServerlessMqttSocket implements NetworkSocket {
   }
 }
 
-export function createGameSocket(roomId: string = "global"): NetworkSocket {
+export function createGameSocket(roomId: string = "GLOBAL"): NetworkSocket {
   const isStaticHost = typeof window !== "undefined" && (
     window.location.hostname.includes("github.io") ||
     window.location.protocol === "file:" ||

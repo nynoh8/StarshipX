@@ -204,7 +204,7 @@ export function Game({
       localData.current.stats = fallbackStats;
       localData.current.activeSeed = initialSeed;
 
-      if (mode === "training" || players.length === 0) {
+      if (mode === "training") {
         const droneSeed = "DRONE_A";
         const droneStats = getShipStats(droneSeed);
         const spawn = generateSolarSpawnPoint();
@@ -310,7 +310,37 @@ export function Game({
     });
 
     newSocket.on("player:move", (data: any) => {
-      if (remoteData.current[data.id]) {
+      if (!data || !data.id || data.id === newSocket.id) return;
+      if (!remoteData.current[data.id]) {
+        remoteData.current[data.id] = {
+          position: data.position,
+          quaternion: data.quaternion,
+          health: 100,
+          isDead: false,
+          activeSeed: data.activeSeed || "seed",
+          customParts: data.customParts,
+          name: data.name || "Piloto Amigo",
+          isNPC: false,
+        };
+        setPlayers((prev) => {
+          if (!prev.some((p) => p.id === data.id)) {
+            return [
+              ...prev,
+              {
+                id: data.id,
+                name: data.name || "Piloto Amigo",
+                activeSeed: data.activeSeed || "seed",
+                customParts: data.customParts,
+                position: data.position,
+                quaternion: data.quaternion,
+                health: 100,
+                isDead: false,
+              },
+            ];
+          }
+          return prev;
+        });
+      } else {
         remoteData.current[data.id].position = data.position;
         remoteData.current[data.id].quaternion = data.quaternion;
       }
