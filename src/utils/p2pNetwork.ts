@@ -13,10 +13,10 @@ export interface NetworkSocket {
   disconnect(): void;
 }
 
-// Public, zero-cost, zero-key MQTT WebSocket brokers for serverless P2P mesh
+// Public, zero-cost, ultra-reliable MQTT WebSocket brokers
 const BROKERS = [
-  "wss://broker.hivemq.com:8884/mqtt",
   "wss://broker.emqx.io:8084/mqtt",
+  "wss://broker.hivemq.com:8884/mqtt",
 ];
 
 export class ServerlessMqttSocket implements NetworkSocket {
@@ -40,14 +40,15 @@ export class ServerlessMqttSocket implements NetworkSocket {
     if (this.isDestroyed || brokerIndex >= BROKERS.length) return;
 
     const brokerUrl = BROKERS[brokerIndex];
-    const topicPrefix = `starshipx/v3/rooms/${encodeURIComponent(this.roomId)}`;
+    const topicPrefix = `starshipx/v4/rooms/${encodeURIComponent(this.roomId)}`;
 
     try {
       this.client = mqtt.connect(brokerUrl, {
-        clientId: `${this.id}-${Math.random().toString(36).substring(2, 6)}`,
+        clientId: `${this.id}-${Math.random().toString(36).substring(2, 7)}`,
         clean: true,
-        connectTimeout: 6000,
-        reconnectPeriod: 3000,
+        connectTimeout: 5000,
+        reconnectPeriod: 2000,
+        keepalive: 30,
         will: {
           topic: `${topicPrefix}/leave`,
           payload: JSON.stringify({ id: this.id }),
@@ -61,22 +62,23 @@ export class ServerlessMqttSocket implements NetworkSocket {
         console.log(`⚡ [P2P Network] Connected to room [${this.roomId}] as [${this.id}] via ${brokerUrl}`);
         this.dispatch("connect");
 
-        // Subscribe to all room events
+        // Subscribe to all events in this room
         this.client?.subscribe(`${topicPrefix}/#`, { qos: 0 }, (err) => {
           if (!err) {
+            console.log(`📡 [P2P Network] Subscribed to room [${this.roomId}]`);
             if (this.localPlayer) {
               this.publish("join", { player: this.localPlayer });
             }
           }
         });
 
-        // Periodic presence heartbeat every 2.5s
+        // Periodic presence heartbeat every 2.0s so all players continuously see each other
         clearInterval(this.heartbeatInterval);
         this.heartbeatInterval = setInterval(() => {
           if (this.connected && this.localPlayer) {
             this.publish("presence", { player: this.localPlayer });
           }
-        }, 2500);
+        }, 2000);
       });
 
       this.client.on("message", (topic: string, messagePayload: any) => {
@@ -102,7 +104,7 @@ export class ServerlessMqttSocket implements NetworkSocket {
 
           this.handleRemoteMessage(action, data);
         } catch (e) {
-          // Ignored malformed packets
+          // Ignore malformed packets
         }
       });
 
@@ -128,7 +130,7 @@ export class ServerlessMqttSocket implements NetworkSocket {
 
   private publish(subTopic: string, payload: any) {
     if (!this.client || !this.connected) return;
-    const topic = `starshipx/v3/rooms/${encodeURIComponent(this.roomId)}/${subTopic}`;
+    const topic = `starshipx/v4/rooms/${encodeURIComponent(this.roomId)}/${subTopic}`;
     const packet = {
       ...payload,
       senderId: this.id,
@@ -214,13 +216,16 @@ export class ServerlessMqttSocket implements NetworkSocket {
       }
 
       case "shoot": {
-        this.dispatch("bullet", {
+        const bulletData = {
           id: data.id,
           position: data.position,
           velocity: data.velocity,
           type: data.type || "normal",
           ownerId: data.ownerId || data.senderId,
-        });
+        };
+        // Deliver to BulletsManager!
+        this.dispatch("bullet:new", bulletData);
+        this.dispatch("bullet", bulletData);
         break;
       }
 
@@ -373,13 +378,19 @@ export class ServerlessMqttSocket implements NetworkSocket {
       }
 
       case "shoot": {
-        this.publish("shoot", {
+        const bulletPayload = {
           id: data?.id || uuidv4(),
           position: data?.position,
           velocity: data?.velocity,
           type: data?.type || "normal",
           ownerId: this.id,
-        });
+        };
+        // 1. Immediately spawn laser/missile locally so the player sees what they shoot!
+        this.dispatch("bullet:new", bulletPayload);
+        this.dispatch("bullet", bulletPayload);
+
+        // 2. Broadcast laser/missile to everyone else in the room!
+        this.publish("shoot", bulletPayload);
         break;
       }
 
@@ -411,25 +422,6 @@ export class ServerlessMqttSocket implements NetworkSocket {
 }
 
 export function createGameSocket(roomId: string = "GLOBAL"): NetworkSocket {
-  const isStaticHost = typeof window !== "undefined" && (
-    window.location.hostname.includes("github.io") ||
-    window.location.protocol === "file:" ||
-    !window.location.port && !window.location.origin.includes(":3000")
-  );
-
-  if (isStaticHost) {
-    console.log(`⚡ [Network] Connecting to Serverless P2P mesh for room [${roomId}]`);
-    return new ServerlessMqttSocket(roomId);
-  }
-
-  // Attempt local Socket.io with fast failover
-  try {
-    const sock = io({
-      timeout: 2500,
-      reconnectionAttempts: 1,
-    }) as unknown as NetworkSocket;
-    return sock;
-  } catch (e) {
-    return new ServerlessMqttSocket(roomId);
-  }
+  console.log(`⚡ [Network] Connecting to Serverless P2P mesh for room [${roomId}] via EMQX`);
+  return new ServerlessMqttSocket(roomId);
 }
