@@ -28,6 +28,62 @@ export function convertGoogleDriveUrl(url?: string): string {
   return url;
 }
 
+// Global GLTF loader and cache to avoid re-parsing models and reduce memory overhead
+const gltfLoader = new GLTFLoader();
+const modelCache = new Map<string, THREE.Group>();
+
+function loadOptimizedGLB(
+  url: string,
+  targetSize: number,
+  onLoaded: (scene: THREE.Group) => void
+) {
+  if (modelCache.has(url)) {
+    onLoaded(modelCache.get(url)!);
+    return;
+  }
+
+  gltfLoader.load(
+    url,
+    (gltf) => {
+      const scene = gltf.scene;
+
+      // Auto-center geometry
+      const box = new THREE.Box3().setFromObject(scene);
+      const centerVec = new THREE.Vector3();
+      box.getCenter(centerVec);
+      scene.position.sub(centerVec);
+
+      // Scale to target visual radius
+      const sphere = new THREE.Sphere();
+      box.getBoundingSphere(sphere);
+      if (sphere.radius > 0) {
+        const scaleFactor = (targetSize * 2) / sphere.radius;
+        scene.scale.setScalar(scaleFactor);
+      }
+
+      // Performance optimization on all meshes
+      scene.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          const mesh = child as THREE.Mesh;
+          mesh.frustumCulled = true;
+          mesh.castShadow = false;
+          mesh.receiveShadow = false;
+        }
+      });
+
+      modelCache.set(url, scene);
+      onLoaded(scene);
+    },
+    undefined,
+    () => {
+      // Silently ignore if not found
+    }
+  );
+}
+
+// Reusable vector to eliminate per-frame Garbage Collection spikes
+const _sharedWorldPos = new THREE.Vector3();
+
 const SOLAR_SYSTEM_DATA = [
   {
     name: "Sun",
@@ -76,55 +132,34 @@ function SunBody({
   const [sunModel, setSunModel] = useState<THREE.Group | null>(null);
 
   useEffect(() => {
-    // 1. Try loading 3D GLB model for Sun
-    const loader = new GLTFLoader();
-    loader.load(
-      getAssetUrl("models/planets/sol.glb"),
-      (gltf) => {
-        const scene = gltf.scene;
-        const box = new THREE.Box3().setFromObject(scene);
-        const centerVec = new THREE.Vector3();
-        box.getCenter(centerVec);
-        scene.position.sub(centerVec);
+    // 1. Load cached 3D GLB model for Sun
+    loadOptimizedGLB(getAssetUrl("models/planets/sol.glb"), data.size, (scene) => {
+      setSunModel(scene);
+    });
 
-        const sphere = new THREE.Sphere();
-        box.getBoundingSphere(sphere);
-        if (sphere.radius > 0) {
-          const scaleFactor = (data.size * 2) / sphere.radius;
-          scene.scale.setScalar(scaleFactor);
-        }
-        setSunModel(scene);
-      },
-      undefined,
-      () => setSunModel(null)
-    );
-
-    // 2. Try loading custom texture
-    const rawUrl = roomMedia?.mediaType === "image" && roomMedia.mediaUrl ? roomMedia.mediaUrl : null;
-    const finalUrl = rawUrl ? convertGoogleDriveUrl(rawUrl) : getAssetUrl("textures/planets/sun.jpg");
-
-    const texLoader = new THREE.TextureLoader();
-    texLoader.load(
-      finalUrl,
-      (loadedTex) => {
-        loadedTex.wrapS = THREE.RepeatWrapping;
-        loadedTex.wrapT = THREE.ClampToEdgeWrapping;
-        loadedTex.needsUpdate = true;
-        setTexture(loadedTex);
-      },
-      undefined,
-      () => {
-        if (!rawUrl) setTexture(null);
-      }
-    );
+    // 2. Custom texture if image media configured
+    if (roomMedia?.mediaType === "image" && roomMedia.mediaUrl) {
+      const finalUrl = convertGoogleDriveUrl(roomMedia.mediaUrl);
+      const texLoader = new THREE.TextureLoader();
+      texLoader.load(
+        finalUrl,
+        (loadedTex) => {
+          loadedTex.wrapS = THREE.RepeatWrapping;
+          loadedTex.wrapT = THREE.ClampToEdgeWrapping;
+          loadedTex.needsUpdate = true;
+          setTexture(loadedTex);
+        },
+        undefined,
+        () => setTexture(null)
+      );
+    }
   }, [data.size, roomMedia?.mediaType, roomMedia?.mediaUrl]);
 
   useFrame((_, delta) => {
     if (meshRef.current) {
       meshRef.current.rotation.y += delta * 0.15;
-      const worldPos = new THREE.Vector3();
-      meshRef.current.getWorldPosition(worldPos);
-      planetPositions.set(data.name, { position: worldPos, radius: data.size });
+      meshRef.current.getWorldPosition(_sharedWorldPos);
+      planetPositions.set(data.name, { position: _sharedWorldPos.clone(), radius: data.size });
     }
   });
 
@@ -133,7 +168,7 @@ function SunBody({
       {/* 3D Sun Core */}
       {roomMedia?.mediaType === "youtube" ? (
         <mesh>
-          <sphereGeometry args={[data.size * 0.98, 48, 48]} />
+          <sphereGeometry args={[data.size * 0.98, 32, 32]} />
           <meshBasicMaterial colorWrite={false} depthWrite={true} />
         </mesh>
       ) : sunModel ? (
@@ -142,15 +177,13 @@ function SunBody({
         </group>
       ) : (
         <mesh ref={meshRef as any}>
-          <sphereGeometry args={[data.size, 64, 64]} />
+          <sphereGeometry args={[data.size, 32, 32]} />
           {roomMedia?.mediaType === "image" && texture ? (
             <meshStandardMaterial
               map={texture}
               emissive="#ffaa00"
-              emissiveMap={texture}
               emissiveIntensity={0.8}
               roughness={0.3}
-              metalness={0.1}
             />
           ) : (
             <meshBasicMaterial color={data.color} />
@@ -158,31 +191,21 @@ function SunBody({
         </mesh>
       )}
 
-      {/* Atmospheric Solar Photosphere Glow */}
-      <mesh scale={1.02}>
-        <sphereGeometry args={[data.size, 48, 48]} />
-        <meshBasicMaterial
-          color={data.emissive || "#ffaa00"}
-          transparent
-          opacity={roomMedia?.mediaType === "youtube" ? 0.15 : 0.35}
-          side={THREE.BackSide}
-          blending={THREE.AdditiveBlending}
-        />
-      </mesh>
+      {/* Atmospheric Photosphere Glow only if NOT rendering GLB model (prevents double overdraw) */}
+      {!sunModel && (
+        <mesh scale={1.03}>
+          <sphereGeometry args={[data.size, 24, 24]} />
+          <meshBasicMaterial
+            color={data.emissive || "#ffaa00"}
+            transparent
+            opacity={0.3}
+            side={THREE.BackSide}
+            blending={THREE.AdditiveBlending}
+          />
+        </mesh>
+      )}
 
-      {/* Outer Corona & Solar Flares Layer */}
-      <mesh scale={1.07}>
-        <sphereGeometry args={[data.size, 32, 32]} />
-        <meshBasicMaterial
-          color="#ff6600"
-          transparent
-          opacity={0.18}
-          side={THREE.BackSide}
-          blending={THREE.AdditiveBlending}
-        />
-      </mesh>
-
-      {/* YouTube Video Projection (if active) */}
+      {/* YouTube Video Projection (if active in room) */}
       {roomMedia?.mediaType === "youtube" && roomMedia.mediaUrl && (
         <Billboard follow={true} lockX={false} lockY={false} lockZ={false}>
           <Html
@@ -224,17 +247,6 @@ function SunBody({
               title="Sun Solar Texture"
             />
           </Html>
-
-          <mesh scale={1.01}>
-            <ringGeometry args={[data.size * 0.85, data.size * 1.05, 64]} />
-            <meshBasicMaterial
-              color="#ffaa00"
-              transparent
-              opacity={0.4}
-              side={THREE.DoubleSide}
-              blending={THREE.AdditiveBlending}
-            />
-          </mesh>
         </Billboard>
       )}
     </group>
@@ -269,103 +281,56 @@ function CelestialBody({
     const planetKey = data.name.toLowerCase();
     const modelFile = data.modelName || `${planetKey}.glb`;
 
-    // 1. Try loading 3D GLB model
-    const glbLoader = new GLTFLoader();
-    glbLoader.load(
-      getAssetUrl(`models/planets/${modelFile}`),
-      (gltf) => {
-        const scene = gltf.scene;
-        const box = new THREE.Box3().setFromObject(scene);
-        const centerVec = new THREE.Vector3();
-        box.getCenter(centerVec);
-        scene.position.sub(centerVec);
-
-        const sphere = new THREE.Sphere();
-        box.getBoundingSphere(sphere);
-        if (sphere.radius > 0) {
-          const scaleFactor = (data.size * 2) / sphere.radius;
-          scene.scale.setScalar(scaleFactor);
-        }
-        setGltfScene(scene);
-      },
-      undefined,
-      () => setGltfScene(null)
-    );
+    // 1. Try loading cached 3D GLB model
+    loadOptimizedGLB(getAssetUrl(`models/planets/${modelFile}`), data.size, (scene) => {
+      setGltfScene(scene);
+    });
 
     // 2. Try loading Moon GLB (around Earth)
     if (data.hasMoon) {
-      glbLoader.load(
-        getAssetUrl("models/planets/lua.glb"),
-        (gltf) => {
-          const scene = gltf.scene;
-          const box = new THREE.Box3().setFromObject(scene);
-          const sphere = new THREE.Sphere();
-          box.getBoundingSphere(sphere);
-          if (sphere.radius > 0) {
-            scene.scale.setScalar(5.5 / sphere.radius);
-          }
-          setMoonScene(scene);
-        },
-        undefined,
-        () => setMoonScene(null)
-      );
+      loadOptimizedGLB(getAssetUrl("models/planets/lua.glb"), 4.5, (scene) => {
+        setMoonScene(scene);
+      });
     }
 
     // 3. Try loading Satellite GLB (around Earth)
     if (data.hasSatellite) {
-      glbLoader.load(
-        getAssetUrl("models/planets/satelite.glb"),
-        (gltf) => {
-          const scene = gltf.scene;
-          const box = new THREE.Box3().setFromObject(scene);
-          const sphere = new THREE.Sphere();
-          box.getBoundingSphere(sphere);
-          if (sphere.radius > 0) {
-            scene.scale.setScalar(2.5 / sphere.radius);
-          }
-          setSatScene(scene);
-        },
-        undefined,
-        () => setSatScene(null)
-      );
+      loadOptimizedGLB(getAssetUrl("models/planets/satelite.glb"), 2.2, (scene) => {
+        setSatScene(scene);
+      });
     }
 
-    // 4. Try loading texture fallback
+    // 4. Try loading texture fallback only if custom textures specified
     const customUrl = roomMedia?.planetTextures?.[planetKey];
-    const targetUrl = customUrl
-      ? convertGoogleDriveUrl(customUrl)
-      : getAssetUrl(`textures/planets/${planetKey}.jpg`);
-
-    const texLoader = new THREE.TextureLoader();
-    texLoader.load(
-      targetUrl,
-      (loadedTex) => {
-        loadedTex.wrapS = THREE.RepeatWrapping;
-        loadedTex.wrapT = THREE.ClampToEdgeWrapping;
-        loadedTex.colorSpace = THREE.SRGBColorSpace;
-        setTexture(loadedTex);
-      },
-      undefined,
-      () => setTexture(null)
-    );
-
-    if (data.hasRings) {
-      const ringCustomUrl = roomMedia?.planetTextures?.["saturn_ring"];
-      const ringUrl = ringCustomUrl
-        ? convertGoogleDriveUrl(ringCustomUrl)
-        : getAssetUrl("textures/planets/saturn_ring.png");
-
+    if (customUrl) {
+      const texLoader = new THREE.TextureLoader();
       texLoader.load(
-        ringUrl,
-        (loadedRing) => {
-          loadedRing.colorSpace = THREE.SRGBColorSpace;
-          setRingTexture(loadedRing);
+        convertGoogleDriveUrl(customUrl),
+        (loadedTex) => {
+          loadedTex.colorSpace = THREE.SRGBColorSpace;
+          setTexture(loadedTex);
         },
         undefined,
-        () => setRingTexture(null)
+        () => setTexture(null)
       );
     }
-  }, [data.name, data.size, data.isSun, data.hasRings, data.hasMoon, data.hasSatellite, data.modelName, roomMedia?.planetTextures]);
+
+    if (data.hasRings && !gltfScene) {
+      const ringCustomUrl = roomMedia?.planetTextures?.["saturn_ring"];
+      if (ringCustomUrl) {
+        const texLoader = new THREE.TextureLoader();
+        texLoader.load(
+          convertGoogleDriveUrl(ringCustomUrl),
+          (loadedRing) => {
+            loadedRing.colorSpace = THREE.SRGBColorSpace;
+            setRingTexture(loadedRing);
+          },
+          undefined,
+          () => setRingTexture(null)
+        );
+      }
+    }
+  }, [data.name, data.size, data.isSun, data.hasRings, data.hasMoon, data.hasSatellite, data.modelName, gltfScene, roomMedia?.planetTextures]);
 
   useFrame((_, delta) => {
     if (ref.current && data.distance > 0) {
@@ -373,9 +338,8 @@ function CelestialBody({
     }
     if (meshRef.current) {
       meshRef.current.rotation.y += delta * 0.2;
-      const worldPos = new THREE.Vector3();
-      meshRef.current.getWorldPosition(worldPos);
-      planetPositions.set(data.name, { position: worldPos, radius: data.size });
+      meshRef.current.getWorldPosition(_sharedWorldPos);
+      planetPositions.set(data.name, { position: _sharedWorldPos.clone(), radius: data.size });
     }
     if (moonRef.current) {
       moonRef.current.rotation.y += delta * 0.75;
@@ -403,11 +367,11 @@ function CelestialBody({
             </group>
           ) : (
             <mesh ref={meshRef as any}>
-              <sphereGeometry args={[data.size, 64, 64]} />
+              <sphereGeometry args={[data.size, 32, 32]} />
               <meshStandardMaterial
                 color={texture ? "#ffffff" : data.color}
                 map={texture || undefined}
-                roughness={texture ? 0.8 : 0.7}
+                roughness={0.7}
                 metalness={0.1}
               />
             </mesh>
@@ -421,7 +385,7 @@ function CelestialBody({
                   <primitive object={moonScene.clone()} />
                 ) : (
                   <mesh>
-                    <sphereGeometry args={[4.5, 16, 16]} />
+                    <sphereGeometry args={[4, 16, 16]} />
                     <meshStandardMaterial color="#cccccc" roughness={0.9} />
                   </mesh>
                 )}
@@ -437,21 +401,10 @@ function CelestialBody({
             </group>
           )}
 
-          {/* Atmospheric Glow */}
-          <mesh scale={1.05}>
-            <sphereGeometry args={[data.size, 32, 32]} />
-            <meshBasicMaterial
-              color={data.emissive || data.color}
-              transparent
-              opacity={0.1}
-              side={THREE.BackSide}
-            />
-          </mesh>
-
-          {/* Saturn Ring Overlay if using sphere fallback */}
+          {/* Saturn Ring Overlay only if using standard sphere fallback */}
           {!gltfScene && data.hasRings && (
             <mesh rotation={[Math.PI / 2.2, 0, 0]}>
-              <ringGeometry args={[data.size * 1.2, data.size * 2.2, 64]} />
+              <ringGeometry args={[data.size * 1.2, data.size * 2.2, 32]} />
               <meshStandardMaterial
                 color={ringTexture ? "#ffffff" : data.color}
                 map={ringTexture || undefined}
@@ -467,27 +420,15 @@ function CelestialBody({
   );
 }
 
+// Optimized Asteroid Field with a clean set of 8 distributed landmarks
 function AsteroidBelt({ center }: { center: [number, number, number] }) {
   const [asteroidScene, setAsteroidScene] = useState<THREE.Group | null>(null);
   const groupRef = useRef<THREE.Group>(null);
 
   useEffect(() => {
-    const loader = new GLTFLoader();
-    loader.load(
-      getAssetUrl("models/planets/asteroide.glb"),
-      (gltf) => {
-        const scene = gltf.scene;
-        const box = new THREE.Box3().setFromObject(scene);
-        const sphere = new THREE.Sphere();
-        box.getBoundingSphere(sphere);
-        if (sphere.radius > 0) {
-          scene.scale.setScalar(12 / sphere.radius);
-        }
-        setAsteroidScene(scene);
-      },
-      undefined,
-      () => setAsteroidScene(null)
-    );
+    loadOptimizedGLB(getAssetUrl("models/planets/asteroide.glb"), 14, (scene) => {
+      setAsteroidScene(scene);
+    });
   }, []);
 
   useFrame((_, delta) => {
@@ -498,11 +439,11 @@ function AsteroidBelt({ center }: { center: [number, number, number] }) {
 
   const asteroidInstances = useMemo(() => {
     const arr = [];
-    for (let i = 0; i < 42; i++) {
-      const angle = (i / 42) * Math.PI * 2 + (Math.random() - 0.5) * 0.2;
-      const dist = 2350 + (Math.random() - 0.5) * 180;
-      const y = (Math.random() - 0.5) * 70;
-      const scale = 0.5 + Math.random() * 1.4;
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2 + (i % 2 === 0 ? 0.1 : -0.1);
+      const dist = 2350 + (i % 3) * 60;
+      const y = ((i % 4) - 2) * 25;
+      const scale = 0.8 + (i % 3) * 0.4;
       arr.push({
         pos: [Math.cos(angle) * dist, y, Math.sin(angle) * dist] as [number, number, number],
         scale,
@@ -524,28 +465,16 @@ function AsteroidBelt({ center }: { center: [number, number, number] }) {
   );
 }
 
+// Optimized Comet with emissive glow instead of expensive dynamic lights
 function CometBody({ center }: { center: [number, number, number] }) {
   const cometRef = useRef<THREE.Group>(null);
   const [cometScene, setCometScene] = useState<THREE.Group | null>(null);
   const angleRef = useRef(0);
 
   useEffect(() => {
-    const loader = new GLTFLoader();
-    loader.load(
-      getAssetUrl("models/planets/cometa.glb"),
-      (gltf) => {
-        const scene = gltf.scene;
-        const box = new THREE.Box3().setFromObject(scene);
-        const sphere = new THREE.Sphere();
-        box.getBoundingSphere(sphere);
-        if (sphere.radius > 0) {
-          scene.scale.setScalar(18 / sphere.radius);
-        }
-        setCometScene(scene);
-      },
-      undefined,
-      () => setCometScene(null)
-    );
+    loadOptimizedGLB(getAssetUrl("models/planets/cometa.glb"), 18, (scene) => {
+      setCometScene(scene);
+    });
   }, []);
 
   useFrame((_, delta) => {
@@ -566,55 +495,30 @@ function CometBody({ center }: { center: [number, number, number] }) {
   return (
     <group ref={cometRef}>
       <primitive object={cometScene.clone()} />
-      <pointLight color="#7dd3fc" intensity={3} distance={400} />
     </group>
   );
 }
 
 export function SolarSystem({ roomMedia }: { roomMedia?: SolarMediaConfig }) {
   const center: [number, number, number] = [0, 0, -3000];
-  const [fullSystemScene, setFullSystemScene] = useState<THREE.Group | null>(null);
-
-  useEffect(() => {
-    const loader = new GLTFLoader();
-    loader.load(
-      getAssetUrl("models/solar_system.glb"),
-      (gltf) => {
-        setFullSystemScene(gltf.scene);
-      },
-      undefined,
-      () => {
-        setFullSystemScene(null);
-      }
-    );
-  }, []);
 
   return (
     <>
       <pointLight
         position={center}
-        intensity={6}
-        distance={50000}
+        intensity={5}
+        distance={40000}
         decay={1}
         color="#fff5e6"
       />
-      <ambientLight intensity={0.8} color="#e0e5ff" />
-      <directionalLight position={[1000, 2000, 1000]} intensity={1.2} color="#ffffff" />
-      <hemisphereLight args={["#ffffff", "#444455", 0.6]} />
+      <ambientLight intensity={0.9} color="#e0e5ff" />
+      <directionalLight position={[1000, 2000, 1000]} intensity={1.0} color="#ffffff" />
 
-      {fullSystemScene ? (
-        <group position={center}>
-          <primitive object={fullSystemScene.clone()} />
-        </group>
-      ) : (
-        <>
-          {SOLAR_SYSTEM_DATA.map((body) => (
-            <CelestialBody key={body.name} data={body} center={center} roomMedia={roomMedia} />
-          ))}
-          <AsteroidBelt center={center} />
-          <CometBody center={center} />
-        </>
-      )}
+      {SOLAR_SYSTEM_DATA.map((body) => (
+        <CelestialBody key={body.name} data={body} center={center} roomMedia={roomMedia} />
+      ))}
+      <AsteroidBelt center={center} />
+      <CometBody center={center} />
     </>
   );
 }

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { Html } from "@react-three/drei";
@@ -29,16 +29,26 @@ export function SpaceTargetTracker({
 }) {
   const { camera, size } = useThree();
   const [targets, setTargets] = useState<TargetInfo[]>([]);
+  const lastUpdateRef = useRef(0);
+  const localPosRef = useRef(new THREE.Vector3());
+  const cameraDirRef = useRef(new THREE.Vector3());
+  const remotePosRef = useRef(new THREE.Vector3());
+  const toTargetRef = useRef(new THREE.Vector3());
 
-  useFrame(() => {
+  useFrame((state) => {
     if (!players || players.length === 0) {
       if (targets.length > 0) setTargets([]);
       return;
     }
 
-    const localPos = new THREE.Vector3().fromArray(localData.current.position || [0, 0, 0]);
-    const cameraDir = new THREE.Vector3();
-    camera.getWorldDirection(cameraDir);
+    // Throttle React state updates to ~12 FPS (every 80ms)
+    // This prevents React from re-rendering the DOM 60 times a second
+    const now = state.clock.getElapsedTime();
+    if (now - lastUpdateRef.current < 0.08) return;
+    lastUpdateRef.current = now;
+
+    localPosRef.current.fromArray(localData.current.position || [0, 0, 0]);
+    camera.getWorldDirection(cameraDirRef.current);
 
     const updatedTargets: TargetInfo[] = [];
 
@@ -46,16 +56,16 @@ export function SpaceTargetTracker({
       const rData = remoteData.current[p.id];
       if (!rData || !rData.position || rData.isDead) return;
 
-      const remotePos = new THREE.Vector3().fromArray(rData.position);
-      const distance = Math.floor(localPos.distanceTo(remotePos));
+      remotePosRef.current.fromArray(rData.position);
+      const distance = Math.floor(localPosRef.current.distanceTo(remotePosRef.current));
       const distFormatted = distance < 1000 ? `${distance}m` : `${(distance / 1000).toFixed(1)}km`;
 
       // Project 3D position to Normalized Device Coordinates (NDC: [-1, 1])
-      const projected = remotePos.clone().project(camera);
+      const projected = remotePosRef.current.clone().project(camera);
 
       // Check if target is in front of camera
-      const toTarget = remotePos.clone().sub(camera.position).normalize();
-      const dot = cameraDir.dot(toTarget);
+      toTargetRef.current.copy(remotePosRef.current).sub(camera.position).normalize();
+      const dot = cameraDirRef.current.dot(toTargetRef.current);
       const isBehind = dot <= 0;
 
       // Invert coordinates if behind camera so indicator flips to the correct edge
@@ -75,7 +85,6 @@ export function SpaceTargetTracker({
       let clampedNdcY = ndcY;
       if (!isInFrustum) {
         const angle = Math.atan2(ndcY, ndcX);
-        // Elliptical edge clamping
         clampedNdcX = Math.cos(angle) * margin;
         clampedNdcY = Math.sin(angle) * margin;
       }
